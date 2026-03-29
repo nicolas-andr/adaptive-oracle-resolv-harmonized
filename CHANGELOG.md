@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.0.3 — 2026-03-29
+
+Figure clarity and Monte Carlo scale-up release.
+
+### Figures
+- Simplified the timeline, bad-debt, and divergence figures to remove overlapping callouts and repeated legends
+- Reworked the Monte Carlo figure to use cleaner distribution overlays plus binned median and 10-90% severity-response bands instead of a dense raw scatter
+
+### Monte Carlo
+- Increased the generic depeg Monte Carlo from 200 to 100,000 deterministic scenarios
+- Replaced the per-path loop with a vectorized reduced-form implementation so full reruns remain practical
+- Updated the README to document the larger sample and the analytic trigger-time approximation used for D₁
+
 ## v1.0.2 — 2026-03-29
 
 Methodology harmonization release.

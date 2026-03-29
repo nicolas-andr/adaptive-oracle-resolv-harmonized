@@ -180,7 +180,7 @@ The DEX price is a piecewise-analytic function fitted to five forensic anchors. 
 | 3 | `fig_divergence_regime_map.png` | Section 8.4 | Divergence with RCVG escalation zones |
 | 4 | `fig_counterfactual_bars.png` | Section 8.3 | Bar comparison: debt, allocator, latency |
 | 5 | `fig_sensitivity_heatmap.png` | Section 8.5 | D₁ threshold × persistence sweep |
-| 6 | `fig_monte_carlo_generic.png` | Section 8.6 | Distribution + scatter across 200 scenarios |
+| 6 | `fig_monte_carlo_generic.png` | Section 8.6 | Distribution + binned severity-response bands across 100,000 scenarios |
 
 ---
 
@@ -263,7 +263,7 @@ Both trigger before the arb loop becomes profitable (the oracle hasn't diverged 
 
 ### Why the Monte Carlo uses reduced-form bad debt
 
-The full market simulation (with borrower cohort, arb loop, and allocator) runs per-block for 120 minutes. Running this 200 times would be slower. Instead, the MC uses a linear approximation: `bad_debt ≈ exposure_time × severity × drain_rate`. This is valid because the arb loop operates at a roughly constant drain rate once the oracle-DEX gap exceeds the profit threshold.
+The full market simulation (with borrower cohort, arb loop, and allocator) runs per-block for 120 minutes. Running this 100,000 times would be unnecessarily slow. Instead, the MC uses a vectorized linear approximation: `bad_debt ≈ exposure_time × severity × drain_rate`, with D₁ trigger times solved analytically and snapped to the same 12-second reduced-form grid. This is valid because the arb loop operates at a roughly constant drain rate once the oracle-DEX gap exceeds the profit threshold.
 
 ---
 

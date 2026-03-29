@@ -12,10 +12,11 @@ Two analyses that test robustness of the counterfactual claim:
    (the arb loop runs at a nearly constant drain rate once profitable).
 
 2. MONTE CARLO (Figure 6)
-   Simulates 200 randomised depeg scenarios with varying severity and
-   speed to demonstrate that the adaptive oracle compresses bad debt
+   Simulates 100,000 randomised depeg scenarios with varying severity
+   and speed to demonstrate that the adaptive oracle compresses bad debt
    across the full distribution, not just for Resolv-specific parameters.
-   Uses a reduced-form bad-debt estimator for computational efficiency.
+   Uses a vectorized reduced-form bad-debt estimator for computational
+   efficiency while preserving the same 12-second trigger grid.
 """
 
 from __future__ import annotations
@@ -120,6 +121,9 @@ def run_monte_carlo() -> dict[str, np.ndarray]:
         If supply shock: trigger in same block → near-zero BD.
         If no supply shock: falls back to D1-like with 70% reduction.
 
+    The implementation is vectorized so the paper figure can use a large
+    sample while remaining deterministic and fast enough for full reruns.
+
     Returns
     -------
     dict with keys 'factual', 'D1', 'D2', 'severities', 'speeds'
@@ -131,54 +135,46 @@ def run_monte_carlo() -> dict[str, np.ndarray]:
     speeds = rng.uniform(*MC.DEPEG_SPEED_RANGE_MIN, MC.N_RUNS)
     has_supply_shock = rng.random(MC.N_RUNS) < MC.SUPPLY_SHOCK_PROB
 
-    results = {
-        'factual': np.zeros(MC.N_RUNS),
-        'D1': np.zeros(MC.N_RUNS),
-        'D2': np.zeros(MC.N_RUNS),
+    # Factual exposure extends until the depeg trough plus a lag, capped at
+    # the modelled manual intervention point.
+    exposure = np.minimum(speeds + 30.0, TIMELINE.GAUNTLET_INTERVENE_MIN)
+    factual = exposure * severities * MC.FACTUAL_DRAIN_RATE_PER_MIN_PER_SEVERITY
+
+    # D1 uses the same reduced-form crash path as the original implementation:
+    # price(t) = 1 - severity * (t / speed)^1.2 before the trough. We solve for
+    # the first threshold crossing analytically, then snap it to the reduced-form
+    # 12-second grid that the original loop searched over.
+    dt = MC.HORIZON_MINUTES / MC.N_STEPS
+    d1_crossing = np.full(MC.N_RUNS, MC.HORIZON_MINUTES, dtype=float)
+    triggerable = severities > ORACLE.D1_DEVIATION_THRESHOLD
+    d1_crossing[triggerable] = speeds[triggerable] * np.power(
+        ORACLE.D1_DEVIATION_THRESHOLD / severities[triggerable],
+        1.0 / 1.2,
+    )
+    trigger_steps = np.floor(d1_crossing / dt).astype(int) + 1
+    last_sample_step = MC.N_STEPS - 1
+    trigger_times = np.where(
+        trigger_steps <= last_sample_step,
+        trigger_steps * dt,
+        MC.HORIZON_MINUTES,
+    )
+    d1 = np.maximum(
+        0.0,
+        trigger_times * severities * MC.D1_DRAIN_RATE_PER_MIN_PER_SEVERITY,
+    )
+
+    # D2 remains a mixed regime: same-block trigger under a supply shock,
+    # otherwise a reduced factual tail after other safeguards help.
+    d2 = np.where(
+        has_supply_shock,
+        severities * MC.D2_DRAIN_RATE_WHEN_TRIGGERED,
+        factual * MC.D2_FALLBACK_REDUCTION,
+    )
+
+    return {
+        'factual': factual,
+        'D1': d1,
+        'D2': d2,
         'severities': severities,
         'speeds': speeds,
     }
-
-    for run in range(MC.N_RUNS):
-        sev = severities[run]
-        spd = speeds[run]
-        shock = has_supply_shock[run]
-
-        # Build per-run price path
-        t_mc = np.arange(MC.N_STEPS, dtype=float) * (MC.HORIZON_MINUTES / MC.N_STEPS)
-        price = np.ones(MC.N_STEPS)
-        for k in range(MC.N_STEPS):
-            if t_mc[k] <= 0:
-                price[k] = 1.0
-            elif t_mc[k] <= spd:
-                frac = t_mc[k] / spd
-                price[k] = 1.0 - sev * frac ** 1.2
-            else:
-                price[k] = 1.0 - sev + 0.02 * rng.randn()
-            price[k] = max(price[k], 0.01)
-
-        # ── Factual ──
-        # Exposure capped at Gauntlet intervention time
-        exposure = min(spd + 30, TIMELINE.GAUNTLET_INTERVENE_MIN)
-        results['factual'][run] = exposure * sev * MC.FACTUAL_DRAIN_RATE_PER_MIN_PER_SEVERITY
-
-        # ── D1: find trigger time ──
-        d1_trigger = None
-        for k in range(1, MC.N_STEPS):
-            dev = abs(1.0 - price[k])
-            if dev > ORACLE.D1_DEVIATION_THRESHOLD:
-                d1_trigger = t_mc[k]
-                break
-        trigger_t = d1_trigger if d1_trigger is not None else MC.HORIZON_MINUTES
-        results['D1'][run] = max(0, trigger_t * sev * MC.D1_DRAIN_RATE_PER_MIN_PER_SEVERITY)
-
-        # ── D2: supply-shock or fallback ──
-        if shock:
-            # Supply shock → trigger in same block → near-zero exposure
-            results['D2'][run] = sev * MC.D2_DRAIN_RATE_WHEN_TRIGGERED
-        else:
-            # No supply shock → falls back to D1-like but with some benefit
-            # from other safety layers
-            results['D2'][run] = results['factual'][run] * MC.D2_FALLBACK_REDUCTION
-
-    return results

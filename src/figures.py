@@ -43,6 +43,39 @@ def _save_figure(fig: plt.Figure, output_dir: Path, filename: str) -> None:
     )
 
 
+def _compact_panel_title(ax: plt.Axes, label: str, title: str) -> None:
+    """Apply a short left-aligned panel title."""
+    ax.set_title(f'{label}. {title}', loc='left', pad=8, fontweight='bold')
+
+
+def _binned_quantiles(x: np.ndarray, y: np.ndarray, n_bins: int = 28
+                      ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Summarize y by x-bin using 10/50/90 percentiles for cleaner plotting."""
+    edges = np.linspace(float(np.min(x)), float(np.max(x)), n_bins + 1)
+    centers = []
+    q10 = []
+    q50 = []
+    q90 = []
+
+    for i, (lo, hi) in enumerate(zip(edges[:-1], edges[1:])):
+        upper_inclusive = i == len(edges) - 2
+        mask = (x >= lo) & ((x <= hi) if upper_inclusive else (x < hi))
+        if not np.any(mask):
+            continue
+        values = y[mask]
+        centers.append(0.5 * (lo + hi))
+        q10.append(float(np.quantile(values, 0.10)))
+        q50.append(float(np.quantile(values, 0.50)))
+        q90.append(float(np.quantile(values, 0.90)))
+
+    return (
+        np.asarray(centers),
+        np.asarray(q10),
+        np.asarray(q50),
+        np.asarray(q90),
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FIGURE 1: TIMELINE & ORACLE PRICE PATHS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -55,7 +88,7 @@ def fig_timeline_oracle_paths(results: dict[str, SimResult], output_dir: Path):
       C: USR total supply with minting events
     """
     _apply_style()
-    fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(11.5, 9.4), sharex=True)
     t = results['factual'].time
 
     # ── Panel A: DEX price ──
@@ -68,21 +101,17 @@ def fig_timeline_oracle_paths(results: dict[str, SimResult], output_dir: Path):
     ax.axvline(TIMELINE.STEAKHOUSE_EXIT_MIN, color=COLORS['steakhouse'],
                ls='--', alpha=0.5, lw=1)
 
-    ax.annotate('Mint #1\n50M USR', xy=(0.4, 1.0), xytext=(5, 0.78),
-                fontsize=9, arrowprops=dict(arrowstyle='->', color='gray'),
-                bbox=dict(boxstyle='round,pad=0.3', fc='#fff3cd', alpha=0.8))
-    ax.annotate('Mint #2\n30M USR', xy=(80.2, 0.04), xytext=(85, 0.25),
-                fontsize=9, arrowprops=dict(arrowstyle='->', color='gray'),
-                bbox=dict(boxstyle='round,pad=0.3', fc='#fff3cd', alpha=0.8))
-    ax.annotate('Steakhouse\nexit (41 min)', xy=(41, 0.03), xytext=(50, 0.55),
-                fontsize=8, color=COLORS['steakhouse'],
-                arrowprops=dict(arrowstyle='->', color=COLORS['steakhouse']))
-    ax.annotate('Gauntlet\nintervenes (91 min)', xy=(91, 0.04), xytext=(95, 0.45),
-                fontsize=8, color=COLORS['factual'],
-                arrowprops=dict(arrowstyle='->', color=COLORS['factual']))
+    ax.text(4.5, 0.88, 'Mint #1\n50M USR', fontsize=8.5, va='top',
+            bbox=dict(boxstyle='round,pad=0.25', fc='#fff3cd', ec='none', alpha=0.9))
+    ax.text(84.5, 0.28, 'Mint #2\n30M USR', fontsize=8.5, va='bottom',
+            bbox=dict(boxstyle='round,pad=0.25', fc='#fff3cd', ec='none', alpha=0.9))
+    ax.text(TIMELINE.STEAKHOUSE_EXIT_MIN + 1.0, 0.65, 'Steakhouse exit',
+            fontsize=8, color=COLORS['steakhouse'], va='top')
+    ax.text(TIMELINE.GAUNTLET_INTERVENE_MIN + 1.0, 0.56, 'Gauntlet halt',
+            fontsize=8, color=COLORS['factual'], va='top')
 
     ax.set_ylabel('USR DEX Price (USD)')
-    ax.set_title('Panel A: USR DEX Spot Price — Catastrophic Depeg in 17 Minutes')
+    _compact_panel_title(ax, 'A', 'USR DEX Price Path')
     ax.set_ylim(-0.02, 1.15)
     ax.legend(loc='upper right')
 
@@ -98,24 +127,28 @@ def fig_timeline_oracle_paths(results: dict[str, SimResult], output_dir: Path):
             color=COLORS['dex_price'], lw=1, alpha=0.5, ls=':',
             label='wstUSR fair value (DEX-implied)')
 
-    # Mark trigger points
+    trigger_lines = []
     for cfg, marker, color in [('D1', 'v', COLORS['D1']), ('D2', 's', COLORS['D2'])]:
         tt = results[cfg].trigger_time
         if tt is not None:
             idx = np.argmin(np.abs(t - tt))
+            ax.axvline(tt, color=color, ls=':', alpha=0.35, lw=1)
             ax.scatter([tt], [results[cfg].oracle[idx]], color=color,
                        marker=marker, s=120, zorder=5, edgecolors='black', lw=0.5)
-            lbl = r'$D_1$ trigger' if cfg == 'D1' else r'$D_2$ trigger'
-            ax.annotate(f'{lbl}\nt={tt:.1f} min',
-                        xy=(tt, results[cfg].oracle[idx]),
-                        xytext=(tt + 8, results[cfg].oracle[idx] + 0.15),
-                        fontsize=8, color=color,
-                        arrowprops=dict(arrowstyle='->', color=color, alpha=0.7))
+            trigger_lines.append((cfg, tt, color))
+
+    if trigger_lines:
+        trigger_text = '\n'.join(
+            f"{cfg} trigger: t={tt:.1f} min" for cfg, tt, _ in trigger_lines
+        )
+        ax.text(0.03, 0.17, trigger_text, transform=ax.transAxes,
+                fontsize=8, va='bottom',
+                bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='none', alpha=0.85))
 
     ax.set_ylabel('wstUSR Oracle Price (USD)')
-    ax.set_title('Panel B: Oracle Price Under Three Configurations')
+    _compact_panel_title(ax, 'B', 'Oracle Paths')
     ax.set_ylim(-0.05, 1.35)
-    ax.legend(loc='upper right', ncol=2)
+    ax.legend(loc='upper right', ncol=2, fontsize=8)
 
     # ── Panel C: Supply ──
     ax = axes[2]
@@ -128,13 +161,12 @@ def fig_timeline_oracle_paths(results: dict[str, SimResult], output_dir: Path):
     tt_d2 = results['D2'].trigger_time
     if tt_d2 is not None:
         ax.axvline(tt_d2, color=COLORS['D2'], ls='--', alpha=0.7, lw=1.5)
-        ax.annotate(f'$D_2$ triggers\n(49% supply spike)', xy=(tt_d2, 155),
-                    xytext=(tt_d2 + 10, 170), fontsize=9, color=COLORS['D2'],
-                    arrowprops=dict(arrowstyle='->', color=COLORS['D2']))
+        ax.text(tt_d2 + 10, 171, r'$D_2$ trigger' + '\n49% supply jump',
+                fontsize=8.5, color=COLORS['D2'], va='top')
 
     ax.set_ylabel('USR Total Supply (M)')
     ax.set_xlabel('Minutes After Simulation Start (Mint #1 at t = 0.4 min)')
-    ax.set_title('Panel C: USR Total Supply — Minting Exploit Signature')
+    _compact_panel_title(ax, 'C', 'USR Supply Path')
     ax.legend(loc='upper left')
 
     plt.tight_layout()
@@ -153,7 +185,7 @@ def fig_bad_debt_prevented(results: dict[str, SimResult], output_dir: Path):
       B: Cumulative Public Allocator inflows
     """
     _apply_style()
-    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(11.5, 7.4), sharex=True)
     t = results['factual'].time
 
     # ── Panel A: Bad debt ──
@@ -167,26 +199,15 @@ def fig_bad_debt_prevented(results: dict[str, SimResult], output_dir: Path):
                 label=label, ls=ls)
 
     ax.fill_between(t, results['D1'].bad_debt / 1e6, results['factual'].bad_debt / 1e6,
-                    alpha=0.12, color=COLORS['prevented'], label='Prevented by adaptive oracle')
+                    alpha=0.12, color=COLORS['prevented'], label='Prevented losses')
 
     # Mark Gauntlet intervention
     ax.axvline(91, color=COLORS['factual'], ls=':', alpha=0.5, lw=1)
-    ax.annotate('Gauntlet\nintervenes', xy=(91, results['factual'].bad_debt[
-        np.argmin(np.abs(t - 91))] / 1e6), xytext=(97, 4.5),
-                fontsize=8, color=COLORS['factual'],
-                arrowprops=dict(arrowstyle='->', color=COLORS['factual'], alpha=0.5))
-
-    # Annotate final values
-    for cfg, color in [('factual', COLORS['factual']),
-                       ('D1', COLORS['D1']), ('D2', COLORS['D2'])]:
-        final = results[cfg].final_bad_debt / 1e6
-        ax.annotate(f'${final:.2f}M', xy=(t[-1], final),
-                    xytext=(t[-1] + 2, final),
-                    fontsize=10, fontweight='bold', color=color,
-                    bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.8))
+    ax.text(93, 5.0, 'Gauntlet\nmanual halt', fontsize=8,
+            color=COLORS['factual'], va='top')
 
     ax.set_ylabel('Cumulative Bad Debt (USD, Millions)')
-    ax.set_title('Panel A: Bad Debt Accumulation — Adaptive Oracle Eliminates Arb-Loop Losses')
+    _compact_panel_title(ax, 'A', 'Bad Debt Accumulation')
     ax.legend(loc='upper left')
 
     # ── Panel B: Allocator inflows ──
@@ -205,8 +226,7 @@ def fig_bad_debt_prevented(results: dict[str, SimResult], output_dir: Path):
 
     ax.set_ylabel('Cumulative Allocator Inflows (USD, M)')
     ax.set_xlabel('Minutes After Simulation Start')
-    ax.set_title('Panel B: Public Allocator Contagion — Severed by Adaptive Oracle')
-    ax.legend(loc='upper left')
+    _compact_panel_title(ax, 'B', 'Public Allocator Inflows')
 
     plt.tight_layout()
     _save_figure(fig, output_dir, 'fig_bad_debt_prevented.png')
@@ -236,35 +256,38 @@ def fig_divergence_regime_map(results: dict[str, SimResult], output_dir: Path):
         (3.0, 10.0, '#e76f51', 'Emergency (3–10%)'),
         (10.0, 100.0, '#e63946', 'Toxic collateral (>10%)'),
     ]
+    zone_label_y = [0.25, 1.0, 2.2, 6.0, 32.0]
     for lo, hi, clr, lbl in zones:
-        ax.axhspan(lo, hi, color=clr, alpha=0.06, label=lbl)
+        ax.axhspan(lo, hi, color=clr, alpha=0.06)
 
     ax.plot(t, div_pct, color='black', lw=1.5, zorder=5,
             label='Static oracle-to-DEX divergence')
 
+    for (_, _, _, lbl), y in zip(zones, zone_label_y):
+        ax.text(118.5, y, lbl, ha='right', va='center', fontsize=7.8,
+                bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.7))
+
     # Steakhouse detection level
     ax.axhline(1.61, color=COLORS['steakhouse'], lw=1, ls=':', alpha=0.8)
-    ax.annotate('Steakhouse detected: 1.61%\n(exited with $0 losses in 41 min)',
-                xy=(2, 1.61), xytext=(25, 4), fontsize=9,
-                color=COLORS['steakhouse'], fontstyle='italic',
-                arrowprops=dict(arrowstyle='->', color=COLORS['steakhouse'], alpha=0.7))
+    ax.text(25, 3.2, 'Steakhouse: 1.61%\nzero losses after exit',
+            fontsize=8.5, color=COLORS['steakhouse'], fontstyle='italic')
 
     # D1 threshold
     ax.axhline(2.0, color=COLORS['D1'], lw=1.5, ls='--', alpha=0.8)
-    ax.annotate(r'$D_1$ threshold: 2%', xy=(3, 2.0), xytext=(25, 7),
-                fontsize=9, color=COLORS['D1'], fontweight='bold',
-                arrowprops=dict(arrowstyle='->', color=COLORS['D1'], alpha=0.7))
+    ax.text(25, 7.2, r'$D_1$ threshold: 2%', fontsize=8.5,
+            color=COLORS['D1'], fontweight='bold')
 
     tt_d1 = results['D1'].trigger_time
     if tt_d1 is not None:
         ax.axvline(tt_d1, color=COLORS['D1'], ls='--', alpha=0.4, lw=1)
+        ax.text(tt_d1 + 0.8, 55, r'$D_1$ trigger', fontsize=8,
+                color=COLORS['D1'], rotation=90, va='center')
 
     ax.set_xlabel('Minutes After Simulation Start')
     ax.set_ylabel('Oracle-to-DEX Divergence (%)')
-    ax.set_title('Oracle–DEX Divergence with RCVG Escalation Zones')
+    ax.set_title('Oracle–DEX Divergence and Escalation Zones')
     ax.set_yscale('symlog', linthresh=5)
     ax.set_ylim(0, 100)
-    ax.legend(loc='center right', fontsize=8)
 
     plt.tight_layout()
     _save_figure(fig, output_dir, 'fig_divergence_regime_map.png')
@@ -283,9 +306,7 @@ def fig_counterfactual_bars(results: dict[str, SimResult], output_dir: Path):
     fig, axes = plt.subplots(1, 3, figsize=(14, 5))
 
     configs = ['factual', 'D1', 'D2']
-    labels = ['Factual:\nStatic Oracle',
-              r'$D_1$: DEX' + '\nDeviation\nTrigger',
-              r'$D_2$: Supply' + '\nVelocity\nTrigger']
+    labels = ['Factual', r'$D_1$', r'$D_2$']
     colors = [COLORS['factual'], COLORS['D1'], COLORS['D2']]
 
     # Panel A: Bad debt
@@ -322,8 +343,7 @@ def fig_counterfactual_bars(results: dict[str, SimResult], output_dir: Path):
     ax.set_title('Detection / Intervention Latency')
     ax.set_ylim(0, 110)
 
-    plt.suptitle('Counterfactual Analysis: Resolv USR Exploit Under Adaptive Oracle',
-                 fontsize=14, fontweight='bold', y=1.02)
+    plt.suptitle('Counterfactual Comparison', fontsize=13, fontweight='bold', y=1.01)
     plt.tight_layout()
     _save_figure(fig, output_dir, 'fig_counterfactual_bars.png')
     plt.close(fig)
@@ -355,7 +375,7 @@ def fig_sensitivity_heatmap(thresholds: np.ndarray, persistence: np.ndarray,
 
     # Mark chosen operating point
     ax.plot(2, 2.0, 'w*', markersize=15, markeredgecolor='black', markeredgewidth=1.5)
-    ax.annotate('Chosen: 2%, 2 blocks\n(~$0.05M bad debt)',
+    ax.annotate('Chosen point\n2%, 2 blocks',
                 xy=(2, 2.0), xytext=(4, 3.5), fontsize=10,
                 color='white', fontweight='bold',
                 arrowprops=dict(arrowstyle='->', color='white', lw=2),
@@ -372,12 +392,16 @@ def fig_sensitivity_heatmap(thresholds: np.ndarray, persistence: np.ndarray,
 
 def fig_monte_carlo(mc_results: dict[str, np.ndarray], output_dir: Path):
     """
-    Two-panel: bad-debt distribution & severity–bad-debt scatter.
+    Two-panel: bad-debt distribution & severity-response quantile bands.
     """
     _apply_style()
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     n_runs = len(mc_results['factual'])
+    sev = mc_results['severities']
+    min_bad_debt = min(float(np.min(mc_results[cfg])) for cfg in ['factual', 'D1', 'D2']) / 1e6
+    max_bad_debt = max(float(np.max(mc_results[cfg])) for cfg in ['factual', 'D1', 'D2']) / 1e6
+    bins = np.logspace(np.log10(min_bad_debt * 0.9), np.log10(max_bad_debt * 1.05), 37)
 
     # ── Panel A: Distribution ──
     ax = axes[0]
@@ -387,30 +411,32 @@ def fig_monte_carlo(mc_results: dict[str, np.ndarray], output_dir: Path):
         ('D2', r'$D_2$: Supply trigger', COLORS['D2']),
     ]:
         data = mc_results[cfg] / 1e6
-        ax.hist(data, bins=30, alpha=0.5, color=color, label=label,
-                edgecolor='black', lw=0.3)
-        ax.axvline(np.mean(data), color=color, ls='--', lw=1.5)
+        ax.hist(data, bins=bins, alpha=0.18, color=color, label=label,
+                histtype='stepfilled')
+        ax.axvline(np.mean(data), color=color, ls='--', lw=1.2)
 
     ax.set_xlabel('Bad Debt (USD, Millions)')
     ax.set_ylabel('Frequency')
-    ax.set_title(f'Monte Carlo: Bad Debt Distribution (n={n_runs})')
+    ax.set_xscale('log')
+    ax.set_title(f'Bad Debt Distribution ({n_runs:,} scenarios)')
     ax.legend()
 
-    # ── Panel B: Scatter ──
+    # ── Panel B: Severity summary ──
     ax = axes[1]
-    sev = mc_results['severities']
-    for cfg, label, color, marker in [
-        ('factual', 'Static oracle', COLORS['factual'], 'o'),
-        ('D1', r'$D_1$: DEX trigger', COLORS['D1'], '^'),
-        ('D2', r'$D_2$: Supply trigger', COLORS['D2'], 's'),
+    for cfg, label, color in [
+        ('factual', 'Static oracle', COLORS['factual']),
+        ('D1', r'$D_1$: DEX trigger', COLORS['D1']),
+        ('D2', r'$D_2$: Supply trigger', COLORS['D2']),
     ]:
         data = mc_results[cfg] / 1e6
-        ax.scatter(sev, data, color=color, alpha=0.4, s=20, marker=marker, label=label)
+        centers, q10, q50, q90 = _binned_quantiles(sev, data)
+        ax.fill_between(centers, q10, q90, color=color, alpha=0.10)
+        ax.plot(centers, q50, color=color, lw=2, label=label)
 
     ax.set_xlabel('Depeg Severity (fraction)')
     ax.set_ylabel('Bad Debt (USD, Millions)')
-    ax.set_title('Depeg Severity vs. Bad Debt: Adaptive Oracle Compresses Tail')
-    ax.legend()
+    ax.set_yscale('log')
+    ax.set_title('Severity vs. Bad Debt (median, 10-90% band)')
 
     plt.tight_layout()
     _save_figure(fig, output_dir, 'fig_monte_carlo_generic.png')

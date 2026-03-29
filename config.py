@@ -291,7 +291,7 @@ class MonteCarloParams:
     These simulate a range of depeg severities and speeds to show
     that the adaptive oracle compresses bad debt across scenarios.
     """
-    N_RUNS: int = 200
+    N_RUNS: int = 100_000
     SEED: int = 2026
     DEPEG_SEVERITY_RANGE: Tuple[float, float] = (0.05, 0.60)
     DEPEG_SPEED_RANGE_MIN: Tuple[float, float] = (5.0, 120.0)

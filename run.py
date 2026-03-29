@@ -24,6 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
+from config import MC
 from src.simulation import run_all, print_summary
 from src.sensitivity import run_sensitivity_sweep, run_monte_carlo
 from src.figures import generate_all
@@ -150,7 +151,7 @@ def run_pipeline(skip_mc: bool = False, do_csv: bool = False,
         print("\nSkipping Monte Carlo (--no-mc flag).")
         mc_data = None
     else:
-        print("\nRunning Monte Carlo (n=200)...")
+        print(f"\nRunning Monte Carlo (n={MC.N_RUNS:,})...")
         mc_data = run_monte_carlo()
         for cfg in ['factual', 'D1', 'D2']:
             arr = mc_data[cfg]

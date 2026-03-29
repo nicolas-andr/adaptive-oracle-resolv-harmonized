@@ -4,12 +4,12 @@
     "data/timeseries_D1.csv": "7e5f0f82d9f4a5d5e8bb36c206c2d360ac45ffc74fbd51c1de8d7a29515ac171",
     "data/timeseries_D2.csv": "b37a06fafbd4143b2f5c338c9156ab08ef286ef497d43ff6402c58f8c2ce3ab2",
     "data/timeseries_factual.csv": "2c794ce87b2b83bb6af524c30c0232203e807fd88f6d5dc8735950759f048413",
-    "figures/fig_bad_debt_prevented.png": "7f5f0607b3037f5b18ea9543b6face6f6118ae088351e8d1d09bca7947afdbbc",
-    "figures/fig_counterfactual_bars.png": "7cd7fb51d53f00bb2e8f340f49aa56dae0b07cd26c3347bf3a4cea46d60eddf3",
-    "figures/fig_divergence_regime_map.png": "cfe67d55e2d89e87950351550a45613944d7c580d2687162970b73116003f8d2",
-    "figures/fig_monte_carlo_generic.png": "d4d13431dfcf379789ff420c517ead98541cb29a6d38e8c751e9afc55f10976a",
-    "figures/fig_sensitivity_heatmap.png": "8e934dca06d7a759c8c01dee60d74ae456a3c68d581d4120961823a6891f94bf",
-    "figures/fig_timeline_oracle_paths.png": "03e13bb183fbcbfbd1067bb2eeed0703f887e9717af0d2617231eb09a2ab4308"
+    "figures/fig_bad_debt_prevented.png": "e600fcc030addf2cdb9d3f3f43d16d3d388b18e2ef66f60d0185e838665645b4",
+    "figures/fig_counterfactual_bars.png": "53d72eb8fd8f1c3b9043c198ccc7018e1fb2d04a36375bc099be39d904eb323a",
+    "figures/fig_divergence_regime_map.png": "449de25a8b1908bfbe2a30387744c7b60cafc8722530f053a946e1e964c54253",
+    "figures/fig_monte_carlo_generic.png": "257e7369d19d8367b1c9980cdf1385ad67b50f81cd3abcbdfa7d69dea6091b00",
+    "figures/fig_sensitivity_heatmap.png": "ae46f3297e23649b81e992fb83e498a0cd4f8637878cbc873d2dcffa3d3c221a",
+    "figures/fig_timeline_oracle_paths.png": "0818d534dfffbfc4334587e047e7f0b35f8a96bc89e8ad792333fcedb91cb13d"
   },
   "results": {
     "D1": {
