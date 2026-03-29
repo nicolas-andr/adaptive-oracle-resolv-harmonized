@@ -103,9 +103,9 @@ def fig_timeline_oracle_paths(results: dict[str, SimResult], output_dir: Path):
     ax.axvline(TIMELINE.STEAKHOUSE_EXIT_MIN, color=COLORS['steakhouse'],
                ls='--', alpha=0.5, lw=1)
 
-    ax.text(4.5, 0.88, 'Mint #1\n50M USR', fontsize=8.5, va='top',
+    ax.text(4.5, 0.88, 'Mint 1\n50M USR', fontsize=8.5, va='top',
             bbox=dict(boxstyle='round,pad=0.25', fc='#fff3cd', ec='none', alpha=0.9))
-    ax.text(84.5, 0.28, 'Mint #2\n30M USR', fontsize=8.5, va='bottom',
+    ax.text(84.5, 0.28, 'Mint 2\n30M USR', fontsize=8.5, va='bottom',
             bbox=dict(boxstyle='round,pad=0.25', fc='#fff3cd', ec='none', alpha=0.9))
     ax.text(TIMELINE.STEAKHOUSE_EXIT_MIN + 1.0, 0.65, 'Steakhouse exit',
             fontsize=8, color=COLORS['steakhouse'], va='top')
@@ -170,12 +170,12 @@ def fig_timeline_oracle_paths(results: dict[str, SimResult], output_dir: Path):
     if tt_d2 is not None:
         ax.axvline(tt_d2, color=COLORS['D2'], ls='--', alpha=0.7, lw=1.5)
         supply_at_trigger = supply_m[np.argmin(np.abs(t - tt_d2))]
-        ax.annotate(r'$D_2$ trigger' + '\nMint #1 adds 50M USR\n(+49% in one block)',
+        ax.annotate(r'$D_2$ trigger' + '\nMint 1 adds 50M USR\n(+49% in one block)',
                     xy=(tt_d2, supply_at_trigger), xytext=(7.0, 167.0),
                     fontsize=8.2, color=COLORS['D2'], va='top', ha='left',
                     arrowprops=dict(arrowstyle='->', color=COLORS['D2'], lw=1.4),
                     bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='none', alpha=0.9))
-    ax.text(GRID.MINT2_OFFSET_MIN + 2.0, 178.0, 'Mint #2\n+30M USR',
+    ax.text(GRID.MINT2_OFFSET_MIN + 2.0, 178.0, 'Mint 2\n+30M USR',
             fontsize=8, va='top',
             bbox=dict(boxstyle='round,pad=0.2', fc='#fff3cd', ec='none', alpha=0.9))
 
