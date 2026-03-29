@@ -1,0 +1,7 @@
+# Resolv USR Counterfactual Simulation — direct dependencies
+# Use requirements-lock.txt for archival reproduction.
+# Tested on Python 3.11.
+
+numpy>=1.26.0,<2.0.0
+pandas>=2.2.0,<3.0.0
+matplotlib>=3.9.0,<4.0.0

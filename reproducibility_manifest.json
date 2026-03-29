@@ -1,0 +1,45 @@
+{
+  "artifacts": {
+    "data/results_summary.csv": "def8e55742399ec244e37a40891fb8bd525ec61b6b32b8c943525d445c14514a",
+    "data/timeseries_D1.csv": "7e5f0f82d9f4a5d5e8bb36c206c2d360ac45ffc74fbd51c1de8d7a29515ac171",
+    "data/timeseries_D2.csv": "b37a06fafbd4143b2f5c338c9156ab08ef286ef497d43ff6402c58f8c2ce3ab2",
+    "data/timeseries_factual.csv": "2c794ce87b2b83bb6af524c30c0232203e807fd88f6d5dc8735950759f048413",
+    "figures/fig_bad_debt_prevented.png": "7f5f0607b3037f5b18ea9543b6face6f6118ae088351e8d1d09bca7947afdbbc",
+    "figures/fig_counterfactual_bars.png": "7cd7fb51d53f00bb2e8f340f49aa56dae0b07cd26c3347bf3a4cea46d60eddf3",
+    "figures/fig_divergence_regime_map.png": "cfe67d55e2d89e87950351550a45613944d7c580d2687162970b73116003f8d2",
+    "figures/fig_monte_carlo_generic.png": "d4d13431dfcf379789ff420c517ead98541cb29a6d38e8c751e9afc55f10976a",
+    "figures/fig_sensitivity_heatmap.png": "8e934dca06d7a759c8c01dee60d74ae456a3c68d581d4120961823a6891f94bf",
+    "figures/fig_timeline_oracle_paths.png": "03e13bb183fbcbfbd1067bb2eeed0703f887e9717af0d2617231eb09a2ab4308"
+  },
+  "results": {
+    "D1": {
+      "final_bad_debt_usd": 831429.0090039906,
+      "total_allocator_inflow_usd": 0.0,
+      "total_arb_borrowed_usd": 0.0,
+      "trigger_time_min": 1.2000000000000002
+    },
+    "D2": {
+      "final_bad_debt_usd": 831429.0090039906,
+      "total_allocator_inflow_usd": 0.0,
+      "total_arb_borrowed_usd": 0.0,
+      "trigger_time_min": 0.4
+    },
+    "factual": {
+      "final_bad_debt_usd": 5872370.287641164,
+      "total_allocator_inflow_usd": 3825000.0,
+      "total_arb_borrowed_usd": 6195000.0,
+      "trigger_time_min": null
+    }
+  },
+  "runtime": {
+    "dependencies": {
+      "matplotlib": "3.10.8",
+      "numpy": "1.26.4",
+      "pandas": "2.3.3"
+    },
+    "implementation": "CPython",
+    "platform": "macOS-26.3.1-arm64-arm-64bit",
+    "python": "3.11.6"
+  },
+  "schema_version": 1
+}

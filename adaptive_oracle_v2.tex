@@ -1,0 +1,520 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{subcaption}
+\usepackage{longtable}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  citecolor=blue
+}
+
+\lstdefinestyle{solidity}{
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue},
+    commentstyle=\color{green!50!black},
+    stringstyle=\color{red!60!black},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    breaklines=true,
+    frame=single,
+    showstringspaces=false
+}
+
+\newcommand{\NORMAL}{\texttt{NORMAL}}
+\newcommand{\STRESSED}{\texttt{STRESSED}}
+
+\title{\textbf{Adaptive Oracle Pricing for Wrapped Assets in DeFi Lending}\\
+\large A Dual-Regime Design with Empirical Validation\\from the Resolv USR Exploit}
+\date{March 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This paper proposes a dual-regime oracle for lending markets that accept wrapped or synthetic assets as collateral, and validates the design against a real-world catastrophic failure. The oracle operates in two regimes: in \NORMAL\ it reports a reference value anchored to the underlying asset, while in \STRESSED\ it converges to the onchain DEX price via an exponential moving average (EMA). Regime switching is triggered by permissionless deviation challenges with timelocks, extending Steakhouse Financial's MetaOracle pattern with two innovations: (i)~smooth EMA convergence replaces the binary source flip, and (ii)~deviation is detected against the \emph{raw} DEX price while the \STRESSED\ output is EMA-smoothed, avoiding ``EMA dampening.''
+
+We validate this design with a detailed counterfactual analysis of the \textbf{Resolv USR exploit of March 22, 2026}, in which 80 million unbacked USR stablecoins were minted via a compromised signing key, causing a 97.5\% depeg in 17 minutes and generating approximately \$6~million in Morpho bad debt through a stale-oracle arbitrage loop. We simulate two alternative oracle configurations: $D_1$ (DEX-deviation trigger at $\delta > 2\%$) and $D_2$ (supply-velocity trigger at $\Delta S / S > 5\%$ per block). In the canonical fixed-step run, $D_2$ activates in the mint block and $D_1$ activates by $t=1.2$ minutes on the simulation timeline, severing the Public Allocator contagion channel before the arb loop becomes profitable. The residual \$0.83M under both adaptive configurations represents genuine liquidation shortfalls from pre-existing positions---losses that the static oracle \emph{hides} as latent insolvency rather than preventing. The Resolv incident also motivates three design extensions: a catastrophic-deviation bypass that skips the standard timelock for extreme events, cross-vault contagion modeling under auto-allocators, and tiered response escalation calibrated to deviation severity.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%% ═══════════════════════════════════════════════════════════════════════
+\section{Problem Statement and Asset-Specific Context}
+%% ═══════════════════════════════════════════════════════════════════════
+
+\paragraph{Why wrapped assets are oracle-hard.}
+In overcollateralized lending, what matters under stress is not the ``fundamental'' value of collateral, but the \emph{realizable liquidation proceeds}---what a liquidator can actually sell the collateral for on available venues. If an oracle continues to mark a wrapped asset at a reference value while DEX liquidity clears at a discount, liquidation shortfalls accumulate as bad debt. In plain terms: the oracle says the collateral is worth \$100, but when a liquidator tries to sell it, the best price is \$95. The \$5 gap is protocol loss.
+
+\paragraph{Scope: cb-assets and beyond.}
+We originally developed this design for Coinbase wrapped assets on Base (cbBTC, cbXRP, cbDOGE, cbADA, cbLTC, cbETH), where Coinbase publishes proof-of-reserves dashboards and the assets are mintable/redeemable 1:1 via Coinbase. However, the Resolv USR exploit of March 2026 demonstrated that the exact same oracle failure mode applies to \emph{any} wrapped or synthetic collateral accepted by a lending protocol---including delta-neutral stablecoins, yield-bearing wrappers, and structured products. The dual-regime oracle design is therefore presented as a general-purpose framework, with the Resolv case study (Section~\ref{sec:resolv}) providing empirical validation.
+
+\paragraph{Design target.}
+We want an oracle that:
+(i)~prices wrapped assets close to reference in routine conditions (capital efficiency),
+(ii)~transitions to a DEX-realizable price when a dislocation persists (solvency),
+(iii)~\emph{smooths} the transition to mitigate endogenous liquidation cascades (market stability),
+(iv)~is implementation-compatible with Morpho-style markets where pricing logic lives in an external oracle adapter,
+(v)~optionally integrates reserve-risk signals (PoR) and liquidation execution auctions, and
+(vi)~includes a \emph{catastrophic-deviation bypass} for extreme events where the standard timelock is too slow.
+
+%% ═══════════════════════════════════════════════════════════════════════
+\section{Baseline: MetaOracleDeviationTimelock and Our Extensions}
+\label{sec:baseline}
+%% ═══════════════════════════════════════════════════════════════════════
+
+Steakhouse Financial's MetaOracleDeviationTimelock pattern provides a clean, conservative regime-switching primitive: a \emph{primary} oracle and a \emph{secondary} oracle, with a deviation threshold, permissionless \texttt{challenge()} initiation, and a timelocked \texttt{acceptChallenge()} that flips the reported source after a fixed delay. Crucially, the MetaOracle performs a \emph{hard binary flip} between two oracle sources. It does not smooth the transition in any way.
+
+We extend the MetaOracle pattern in three ways:
+
+\begin{enumerate}[leftmargin=*]
+\item \textbf{Smooth EMA convergence.} Instead of a hard flip to a secondary oracle source, the \STRESSED\ regime uses an EMA-smoothed DEX price that \emph{converges} toward the market-realizable value over time. This reduces the liquidation clustering that a sudden repricing event can cause.
+
+\item \textbf{Raw-vs-smoothed separation.} We impose a strict separation between (a)~the signal used to \emph{detect} stress (raw DEX TWAP/VWAP) and (b)~the price \emph{reported} once stressed (EMA-smoothed DEX). If the EMA were also used for detection, smoothing would mechanically reduce measured deviation---``EMA dampening''---potentially delaying the switch at the exact moment it is most needed.
+
+\item \textbf{Catastrophic-deviation bypass} (new, motivated by Resolv). For extreme deviations ($\delta > \tau_{\text{catastrophic}}$), the oracle bypasses the normal timelock $\tau_t$ and activates \STRESSED\ immediately. This addresses the class of events---minting exploits, custodial failures, infinite-approval drains---where a 97\% depeg occurs in minutes and the standard 16-hour timelock would be catastrophically slow (\Cref{sec:resolv_counterfactual}).
+\end{enumerate}
+
+%% ═══════════════════════════════════════════════════════════════════════
+\section{Dual-Regime Oracle Methodology}
+\label{sec:methodology}
+%% ═══════════════════════════════════════════════════════════════════════
+
+\subsection{Notation}
+
+Let $W$ be a wrapped asset and $U$ its underlying.
+\begin{itemize}[leftmargin=*]
+  \item $P_U(t)$: robust reference price for $U$ (e.g., Chainlink Price Feed).
+  \item $r_W(t)$: conversion rate ($U$ per $W$). For 1:1 wrappers, $r_W(t)\equiv 1$. For yield-bearing wrappers (e.g., cbETH, wstUSR), $r_W(t)$ changes over time.
+  \item $P_{\mathrm{ref}}(t)=P_U(t)\,r_W(t)$: reference value (what $W$ ``should'' be worth if the wrapper is functioning).
+  \item $M_{\mathrm{dex}}(t)$: DEX price estimate for $W$, aggregated across venues (multi-venue TWAP/VWAP).
+  \item $\delta(t)$: symmetric deviation metric:
+\end{itemize}
+\[
+\delta(t)=\frac{|P_{\mathrm{ref}}(t)-M_{\mathrm{dex}}(t)|}{\tfrac{1}{2}\left(P_{\mathrm{ref}}(t)+M_{\mathrm{dex}}(t)\right)}.
+\]
+
+\subsection{State-Dependent Output}
+
+The oracle has a discrete state $\mathcal{S}(t)\in\{\NORMAL,\STRESSED\}$ and reports:
+\[
+P_W(t)=
+\begin{cases}
+P_{\mathrm{ref}}(t)\cdot \rho_{\mathrm{PoR}}(t) & \text{if }\mathcal{S}(t)=\NORMAL\\
+\tilde{M}_{\mathrm{dex}}(t)\cdot \rho_{\mathrm{PoR}}(t) & \text{if }\mathcal{S}(t)=\STRESSED,
+\end{cases}
+\]
+where $\rho_{\mathrm{PoR}}(t)\in(0,1]$ is an optional reserve-risk multiplier (Section~\ref{sec:por}).
+
+\subsection{EMA Convergence in \STRESSED}
+
+Once the oracle enters \STRESSED, the reported price converges toward the DEX price via an EMA:
+\[
+\tilde{M}_{n}= \alpha M_{\mathrm{dex},n}+(1-\alpha)\tilde{M}_{n-1},
+\qquad
+\alpha=1-\exp\!\left(-\frac{\ln 2\cdot \Delta t}{h}\right),
+\]
+where $h$ is the half-life. Optionally, $h$ adapts to deviation severity:
+\[
+h(\delta)=h_{\max}-(h_{\max}-h_{\min})\cdot 
+\min\!\left(1,\frac{\delta-\tau_d}{\tau_{\mathrm{severe}}-\tau_d}\right).
+\]
+For catastrophic deviations ($\delta > \tau_{\mathrm{catastrophic}}$, e.g., $>50\%$), we set $h\to h_{\mathrm{floor}}$ (e.g., 30 seconds), achieving near-instant convergence. This is the mathematical expression of the catastrophic-deviation bypass: the oracle effectively reprices in 1--2 blocks.
+
+\subsection{Regime Switching: Standard and Catastrophic Paths}
+
+\paragraph{Standard path} (moderate deviations, $\tau_d < \delta \le \tau_{\mathrm{catastrophic}}$):
+\begin{enumerate}[leftmargin=*]
+\item \textbf{Challenge.} If $\delta(t)>\tau_d$, any actor may call \texttt{challenge()}, recording $t_{\text{start}}$.
+\item \textbf{Activation.} If $\delta>\tau_d$ persists for $\tau_t$, any actor may call \texttt{acceptChallenge()} to enter \STRESSED.
+\item \textbf{Healing.} Returning to \NORMAL\ requires $\delta<\tau_r<\tau_d$ for $\tau_{t,r}$ (hysteresis).
+\end{enumerate}
+
+\paragraph{Catastrophic path} (extreme deviations, $\delta > \tau_{\mathrm{catastrophic}}$):
+\begin{enumerate}[leftmargin=*]
+\item \textbf{Instant activation.} If $\delta(t) > \tau_{\mathrm{catastrophic}}$, the oracle enters \STRESSED\ immediately, bypassing the timelock. This can be triggered permissionlessly.
+\item \textbf{Concurrent actions.} In addition to repricing, the oracle adapter emits a signal that downstream systems (Public Allocator, borrow gates) can use to halt new capital inflows.
+\item \textbf{Healing.} Same as standard path---requires sustained recovery below $\tau_r$.
+\end{enumerate}
+
+We recommend $\tau_{\mathrm{catastrophic}} \in [10\%, 50\%]$ depending on asset class. For stablecoins and yield-bearing stables, 10\% is appropriate; for volatile wrapped assets, 30--50\%.
+
+\subsection{Supply-Velocity Trigger (Extension $D_2$)}
+\label{sec:supply_trigger}
+
+The Resolv exploit introduced a failure mode not addressed by price-deviation detection alone: an \emph{infinite-mint attack} where 80 million unbacked tokens were created in a single block, representing a 49\% increase in total supply. The DEX price had not yet reacted when the mint occurred---supply velocity is a \emph{leading} signal.
+
+We define a supply-velocity trigger as an alternative or complementary regime-switching condition:
+\[
+\frac{S(t) - S(t - k\cdot\Delta t_{\text{block}})}{S(t - k\cdot\Delta t_{\text{block}})} > \tau_S,
+\]
+where $S(t)$ is the wrapped asset's \texttt{totalSupply()}, $k$ is a lookback in blocks, and $\tau_S$ is a threshold. For stablecoins, $\tau_S = 5\%$ over $k=1$ block is essentially un-triggerable by organic activity---no mature stablecoin grows 5\% in 12 seconds under normal conditions.
+
+This trigger is:
+\begin{itemize}[leftmargin=*]
+\item \textbf{Zero-latency}: detectable in the same block as the mint.
+\item \textbf{Un-manipulable via flash loans}: only the minting authority can alter \texttt{totalSupply}.
+\item \textbf{Complementary}: it fires \emph{before} DEX prices react, whereas the DEX-deviation trigger fires \emph{after}.
+\end{itemize}
+
+The oracle can use an OR-gate: enter \STRESSED\ if \emph{either} $\delta > \tau_d$ (price deviation) \emph{or} supply velocity exceeds $\tau_S$.
+
+%% ═══════════════════════════════════════════════════════════════════════
+\section{Morpho-Compatible Integration}
+\label{sec:morpho}
+%% ═══════════════════════════════════════════════════════════════════════
+
+Morpho markets are oracle-agnostic: the market specifies an oracle contract that returns the price of 1 unit of collateral quoted in 1 unit of loan asset. The liquidation threshold (LLTV) is static at market creation.
+
+Because LLTV cannot be dynamically updated, the safest implementation surface for adaptive risk controls is the \emph{oracle adapter} itself. The adapter computes the wrapped-asset value via the dual-regime logic and returns a collateral/loan price quote consistent with the Morpho oracle interface. No changes to Morpho's core contracts are required.
+
+\paragraph{Allocator integration.} Critically, the oracle adapter should also expose a \texttt{isStressed()} view function that downstream systems---especially automated allocators like Morpho's Public Allocator---can query before routing capital. The Resolv case study (\Cref{sec:resolv_contagion}) demonstrates that the most damaging contagion channel was not the oracle lag itself, but the \emph{allocator continuing to supply fresh USDC into insolvent markets under stale pricing}.
+
+%% ═══════════════════════════════════════════════════════════════════════
+\section{Reserve-Risk Gate (PoR)}
+\label{sec:por}
+%% ═══════════════════════════════════════════════════════════════════════
+
+A depeg is a \emph{market} phenomenon; a reserve shortfall is a \emph{solvency} phenomenon. We define a binary multiplier:
+\[
+\rho_{\mathrm{PoR}}(t)=\begin{cases}
+1 & \text{if backing data is healthy}\\
+\rho_{\min}\in(0,1) & \text{if a deficit or data-availability alarm is triggered.}
+\end{cases}
+\]
+This is a circuit breaker against ``peg illusion''---the scenario where the market continues to price the wrapped asset at par even though redeemability or backing is impaired. The Resolv exploit is an extreme instance: 80M unbacked tokens were minted, but the Morpho oracle continued reporting \$1.13 for wstUSR while the true backing ratio had collapsed to approximately \$95M assets against \$173M liabilities.
+
+%% ═══════════════════════════════════════════════════════════════════════
+\section{Liquidation Efficiency via Order-Flow Auctions}
+\label{sec:atlas}
+%% ═══════════════════════════════════════════════════════════════════════
+
+\subsection{Why liquidation execution matters for risk parameters}
+
+In standard lending designs, liquidation is ``fixed extraction'': a deterministic incentive set by the protocol. OFA-based liquidation (Atlas-style, Chainlink SVR) replaces this with competitive auctions where solver bids compress realized costs.
+
+\subsection{A liquidation-cost signal}
+
+Let $C$ denote realized liquidation cost as a fraction of repaid debt. Under auctions, $C$ becomes an observable random variable whose distribution tightens with solver competition. This unlocks two risk-management levers:
+\begin{enumerate}[leftmargin=*]
+\item \textbf{Ex ante:} If $C$ is demonstrably tight and low, curators can justify higher LLTVs.
+\item \textbf{Ex post:} Auction outcomes can be used to compute a conservative execution buffer $\hat{c}(t)$ injected into the oracle adapter: $P_W^{\text{adj}}(t) = P_W(t)\cdot(1-\hat{c}(t))$.
+\end{enumerate}
+
+\paragraph{Scope under catastrophic events.} OFA-compressed liquidation costs are a steady-state efficiency gain. In catastrophic depegs ($>$50\%), auctions are largely irrelevant---no rational bidder competes to liquidate worthless collateral. The risk frontier shift (+2.2pp LLTV at 5\% shortfall probability in our stylized simulations) applies to normal-to-moderate stress only. Circuit breakers (PoR gate, catastrophic-deviation bypass) dominate existential events. These are complementary risk layers, not substitutes.
+
+%% ═══════════════════════════════════════════════════════════════════════
+\section{Illustrative Dynamics (Synthetic, Non-Calibrated)}
+\label{sec:illustrative}
+%% ═══════════════════════════════════════════════════════════════════════
+
+The figures in this section are \emph{synthetic} simulations intended to illustrate mechanism-level intuition for the generic dual-regime design, not parameter recommendations.
+
+\subsection{Oracle transition intuition}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{oracle_transition_sim.png}
+\caption{\label{fig:oracle_transition}Illustrative price outputs for three oracle choices under a persistent DEX discount. Design A (reference-only) never adjusts. Design B (hard switch) jumps to the DEX price after the timelock. Design C (this work) converges smoothly via EMA. (Synthetic.)}
+\end{figure}
+
+\subsection{Why deviation detection must remain raw}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{deviation_dampening.png}
+\caption{\label{fig:ema_dampening}``EMA dampening'': if deviation is measured against an EMA-smoothed DEX price, the deviation signal is mechanically reduced. The architecture separates detection (raw) from reporting (EMA). (Synthetic.)}
+\end{figure}
+
+\subsection{Cascade amplification from hard switching}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.95\linewidth]{liquidation_cascades.png}
+\caption{\label{fig:liq_cascades}Liquidation clustering: hard switching produces a larger liquidation wave, while EMA convergence spreads repricing through time. (Synthetic.)}
+\end{figure}
+
+\subsection{Latent insolvency under reference-only marking}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\linewidth]{bad_debt_components.png}
+\caption{\label{fig:bad_debt_components}Bad debt decomposition: reference-only marking defers liquidations, creating ``latent'' insolvency. EMA and hard switching surface insolvency earlier. (Synthetic.)}
+\end{figure}
+
+\subsection{Single-path and Monte Carlo results}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+Design & Total bad debt (MM) & Peak liq vol (MM) & Peak liq count & Remaining pos. \\
+\midrule
+A: Reference-only & 72.03 & 140.81 & 2439 & 2532 \\
+B: Hard switch    & 72.58 & 148.11 & 2525 & 142 \\
+C: EMA after switch & 67.11 & 140.81 & 2439 & 212 \\
+\bottomrule
+\end{tabular}
+\caption{\label{tab:single_path}Single-path synthetic illustration. Design A has 2,532 remaining positions carrying latent insolvency.}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.88\linewidth]{bad_debt_monte_carlo.png}
+\caption{\label{fig:mc_bad_debt}Monte Carlo ($n=90$): EMA after switch reduces mean bad debt and compresses the right tail.}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.88\linewidth]{cascade_scatter.png}
+\caption{\label{fig:mc_scatter}Cascade severity vs.\ solvency loss. EMA reduces peak liquidation volume for comparable total bad debt.}
+\end{figure}
+
+\subsection{Auction risk frontier (stylized)}
+
+\begin{figure}[H]
+\centering
+\begin{minipage}[t]{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{liq_cost_distributions.png}
+\caption{\label{fig:liq_cost_dist}Auctions compress realized liquidation costs, especially in the right tail.}
+\end{minipage}
+\hfill
+\begin{minipage}[t]{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{risk_frontier_liq_costs.png}
+\caption{\label{fig:risk_frontier}Auctions shift the risk frontier: higher LLTV at same tail-loss budget.}
+\end{minipage}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.65\linewidth]{shortfall_probability.png}
+\caption{\label{fig:shortfall_prob}Auctions reduce $\mathbb{P}(\text{shortfall}>0)$ for a given LLTV.}
+\end{figure}
+
+%% ═══════════════════════════════════════════════════════════════════════
+\section{Case Study: The Resolv USR Exploit (March 22, 2026)}
+\label{sec:resolv}
+%% ═══════════════════════════════════════════════════════════════════════
+
+On March 22, 2026, an attacker compromised Resolv Labs' AWS Key Management Service environment, stole the \texttt{SERVICE\_ROLE} private key used to authorize USR minting, and used it to mint 80 million unbacked USR stablecoins. The exploit triggered a 97.5\% price collapse in under 17 minutes, cascaded through Morpho lending markets via a stale-oracle arbitrage loop, and left the Resolv protocol insolvent with \$95M in assets against \$173M in liabilities.
+
+This section reconstructs the exploit, analyzes the Morpho contagion mechanism, and presents counterfactual simulations under two adaptive oracle configurations.
+
+\subsection{The Exploit: Forensic Reconstruction}
+\label{sec:resolv_exploit}
+
+USR is a delta-neutral stablecoin: each dollar of USR is backed by ETH spot long and an equal ETH perpetual short. Revenue comes from funding rates and staking yields, generating 5--6\% APY for USR holders and 20--40\% APY for junior-tranche (RLP) holders who absorb losses first. Critically, delta-neutral designs have \emph{zero excess collateral}---any minting irregularity creates a proportional system shortfall with no redundancy.
+
+The minting architecture relied on a two-step process: (1)~\texttt{requestSwap}---user deposits USDC, (2)~\texttt{completeSwap}---an off-chain \texttt{SERVICE\_ROLE} key signs how much USR to mint. The contract enforced a \emph{minimum} output but had no maximum mint cap, no collateral ratio check, and no oracle integration.
+
+\paragraph{Timeline.}
+\begin{itemize}[leftmargin=*]
+\item \textbf{Block 24,710,031 (02:21:35 UTC):} Mint \#1. The attacker calls \texttt{completeSwap} with 100,000 USDC and a target amount of 50,000,000 USR---a 500:1 minting ratio. The contract accepts unconditionally.
+\item \textbf{02:38 UTC ($\sim$17 min later):} USR crashes to \$0.025 on Curve as 50M unbacked tokens flood thin DEX liquidity.
+\item \textbf{03:02 UTC (41 min):} Steakhouse Financial, which had detected a 1.61\% USR deviation at the first mint block, completes its exit from all Morpho positions with zero losses.
+\item \textbf{Block 24,710,428 (03:41:47 UTC):} Mint \#2. The attacker mints an additional 30M USR. Gas price escalates from 0.033 to 13,196 Gwei, indicating urgency.
+\item \textbf{03:52 UTC:} Gauntlet intervenes manually---90 minutes after Mint \#1.
+\item \textbf{06:41--10:15 UTC:} The attacker consolidates approximately 11,408 ETH (\$23--25M) across multiple DEX hops.
+\end{itemize}
+
+\subsection{The Morpho Contagion Mechanism}
+\label{sec:resolv_contagion}
+
+The Morpho contagion was not caused by a bug in Morpho's contracts. It was caused by a stale oracle and automated capital routing.
+
+\paragraph{The arbitrage loop.} The Morpho wstUSR oracle was hardcoded at \$1.13 while the DEX spot price of wstUSR had collapsed to \$0.02--\$0.05---a 50--56$\times$ overvaluation. This created a deterministic arbitrage: (1)~buy cheap wstUSR on DEX, (2)~deposit as collateral in Morpho at \$1.13, (3)~borrow real USDC, (4)~repeat. Each cycle extracted genuine USDC from Morpho lenders.
+
+\paragraph{The allocator amplifier.} Morpho's Public Allocator automatically routed USDC from safe vaults into the USR-collateral vaults when it detected high utilization. High utilization was misinterpreted as healthy demand when in reality it was the consequence of toxic collateral being overvalued. This created a \emph{cross-vault contagion} channel: the Gauntlet USDC Core vault lost approximately \$6M over 90 minutes. The 9summits vault auto-supplied capital for 10 hours. Approximately 15 Morpho vaults were impacted.
+
+\paragraph{Key observation.} Organic bad debt in the affected Morpho markets was approximately \$4,900 before curator automation fired. The overwhelming majority of losses came from the \emph{allocator continuing to supply fresh USDC into insolvent markets under stale pricing}. This is the mechanism that the adaptive oracle is designed to break.
+
+\subsection{Resolv Validates Design~A Failure}
+\label{sec:resolv_validates}
+
+The Morpho wstUSR oracle at \$1.13 while DEX spot was \$0.02 is an extreme instance of the paper's ``reference-only'' (Design~A) failure mode. In our synthetic simulations (\Cref{tab:single_path}), Design~A produces an 8\% discount leading to \$37M in latent bad debt across 2,532 remaining positions that ``look solvent'' only because the oracle has not repriced. The Resolv exploit is the same mechanism at 97.5\% depeg scale: a \$78M protocol shortfall, \$6M in direct Morpho losses, and thousands of positions that appear healthy only because the oracle lies about collateral value.
+
+The ``peg illusion'' described in Section~\ref{sec:por} is exactly what happened. The oracle said the collateral was worth \$1.13; the market said it was worth \$0.02. Every USDC borrowed against that collateral was a loss.
+
+%% ═══════════════════════════════════════════════════════════════════════
+\section{Counterfactual Analysis: What the Adaptive Oracle Would Have Done}
+\label{sec:resolv_counterfactual}
+%% ═══════════════════════════════════════════════════════════════════════
+
+We simulate a Morpho-style isolated lending market calibrated to the Resolv/Morpho environment (\$12M total wstUSR collateral, \$3M initial USDC pool, LLTV = 86\%) under three oracle configurations:
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{Factual}: Static oracle at \$1.13 throughout. Allocator active. New borrows permitted.
+\item \textbf{$D_1$} (DEX-deviation trigger): Enters \STRESSED\ when $\delta > 2\%$ persists for 2 consecutive blocks ($\sim$24 seconds). Upon activation: EMA convergence toward DEX price, allocator severed, new borrows halted.
+\item \textbf{$D_2$} (Supply-velocity trigger): Enters \STRESSED\ when $\Delta S / S > 5\%$ in a single block ($\sim$12 seconds). Same concurrent actions as $D_1$.
+\end{itemize}
+
+\subsection{Oracle price paths}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig_timeline_oracle_paths.png}
+\caption{\label{fig:resolv_timeline}\textbf{Panel~A}: USR DEX spot price crash---97.5\% in 17 minutes. \textbf{Panel~B}: Oracle price under three configurations. The static oracle remains at \$1.13 throughout; $D_1$ triggers at $t\approx 1.2$ min and converges toward the DEX-implied value; $D_2$ triggers at $t\approx 0.4$ min (same block as the mint). \textbf{Panel~C}: USR total supply showing the 49\% spike that triggers $D_2$.}
+\end{figure}
+
+\subsection{Bad debt prevention}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig_bad_debt_prevented.png}
+\caption{\label{fig:resolv_bad_debt}\textbf{Panel~A}: Cumulative bad debt. The static oracle accumulates losses throughout the arb loop until Gauntlet manually intervenes at $t=91$ min (\$5.87M). Both $D_1$ and $D_2$ truncate losses to \$0.83M by severing the arb loop and allocator channel within the first minute after Mint \#1. \textbf{Panel~B}: Cumulative Public Allocator inflows. Under the factual scenario, the allocator routes \$3.83M of fresh USDC into insolvent vaults. Under both adaptive configurations, the allocator is severed before any meaningful inflow occurs.}
+\end{figure}
+
+\subsection{Counterfactual results}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+Configuration & Bad Debt & Trigger Time & Allocator Inflow & Prevention \\
+\midrule
+Factual: Static oracle & \$5.87M & 91 min (manual) & \$3.83M & --- \\
+$D_1$: DEX-deviation trigger & \$0.83M & 1.2 min & \$0 & 85.8\% \\
+$D_2$: Supply-velocity trigger & \$0.83M & 0.4 min & \$0 & 85.8\% \\
+\bottomrule
+\end{tabular}
+\caption{\label{tab:resolv_counterfactual}Counterfactual simulation results. The factual scenario is calibrated to the actual Morpho outcome: \$5.87M bad debt by the time Gauntlet manually intervened at $t=91$ minutes, closely matching the empirical $\sim$\$6M. Both adaptive configurations eliminate 100\% of the arb-loop extraction channel. The residual \$0.83M under $D_1$/$D_2$ is genuine liquidation shortfall from pre-existing positions whose collateral became worthless---the static oracle \emph{hides} this same shortfall as latent insolvency rather than preventing it.}
+\end{table}
+
+\paragraph{Why $D_2$ triggers faster than $D_1$.} The supply-velocity trigger ($D_2$) fires in the \emph{same block} as the mint ($t=0.4$ min), because \texttt{totalSupply()} jumps by 49\% instantaneously. The DEX-deviation trigger ($D_1$) requires the price to actually move on the DEX, which takes the simulation to $t\approx 1.2$ min as arbitrageurs and sellers react. Relative to Mint \#1, this is a 48-second lag. That gap is operationally meaningful but does not change the outcome: both triggers activate before the arb loop becomes profitable.
+
+\paragraph{Why both have the same final bad debt.} Both configurations trigger before the oracle-to-DEX divergence is large enough for the arb loop to operate (the loop requires oracle/DEX $>2\times$). The \$0.83M residual comes from pre-existing borrower positions whose collateral has genuinely lost value. Under the static oracle, this same shortfall exists but is \emph{hidden}---the oracle still reports \$1.13, so these positions appear healthy. The adaptive oracle does not prevent this loss; it \emph{surfaces it honestly} through proper liquidation. The entire arb-loop extraction channel (\$5.04M) is eliminated.
+
+\paragraph{Calibration against actual losses.} The factual scenario models Gauntlet's manual intervention as a hard cutoff at $t=91$ minutes. Before this point, the arb loop drains approximately \$68K per minute from the USDC pool, with the Public Allocator periodically refilling it from safe vaults. This produces \$5.87M total bad debt by $t=91$, closely matching the empirical $\sim$\$6M. The match validates the calibration: the simulated drain rate, pool size, and allocator dynamics are consistent with the observed loss trajectory.
+
+\subsection{Oracle--DEX divergence with escalation zones}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig_divergence_regime_map.png}
+\caption{\label{fig:resolv_divergence}Oracle-to-DEX divergence under the static oracle, with escalation zones from the RCVG framework. The divergence exceeds 2\% within $\sim$1 minute and reaches 98\%+ by 17 minutes. Steakhouse Financial detected a 1.61\% deviation and exited with zero losses in 41 minutes---the empirical proof that the signal existed and was actionable.}
+\end{figure}
+
+\subsection{Sensitivity analysis}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{fig_sensitivity_heatmap.png}
+\caption{\label{fig:resolv_sensitivity}$D_1$ sensitivity: estimated bad debt as a function of deviation threshold and block persistence requirement. The operating point (2\% threshold, 2 blocks) sits in the green zone. Even relatively loose parameters (5\% threshold, 5 blocks) prevent the majority of losses, because the Resolv depeg was so severe that detection is easy across a wide parameter range.}
+\end{figure}
+
+\subsection{Monte Carlo: generalization beyond Resolv}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig_monte_carlo_generic.png}
+\caption{\label{fig:resolv_mc}Monte Carlo ($n=200$) across randomized depeg scenarios of varying severity (5--60\%) and speed (5--120 minutes). \textbf{Left}: Bad debt distribution. Both adaptive configurations compress the distribution toward zero. \textbf{Right}: Depeg severity vs.\ bad debt. The static oracle shows linear scaling; the adaptive oracle flattens losses across all severities.}
+\end{figure}
+
+\subsection{Steakhouse as empirical benchmark}
+
+Steakhouse Financial's response provides a real-world calibration point. They detected a 1.61\% USR deviation at 02:21 UTC---the exact block of Mint \#1---and fully exited all Morpho positions by 03:02 UTC, 41 minutes later, with zero losses. This demonstrates that:
+\begin{enumerate}[leftmargin=*]
+\item The signal existed and was detectable at sub-2\% deviation.
+\item A 41-minute response window was sufficient for manual exit.
+\item The dual-regime oracle automates what Steakhouse did manually---but extends coverage to \emph{all} vaults, not just those with custom monitoring.
+\end{enumerate}
+
+The contrast with 9summits, which auto-supplied capital into insolvent markets for 10 hours, illustrates the danger of relying on curator vigilance. Automated circuit breakers are not optional.
+
+%% ═══════════════════════════════════════════════════════════════════════
+\section{Design Extensions Motivated by Resolv}
+\label{sec:extensions}
+%% ═══════════════════════════════════════════════════════════════════════
+
+The Resolv exploit motivates several concrete extensions to the base dual-regime design.
+
+\subsection{Catastrophic-deviation bypass}
+
+The standard timelock $\tau_t$ (16 hours in the MetaOracle baseline) exists to give borrowers notice and prevent manipulation-induced false switches. But when a 97\% depeg occurs in 17 minutes, the notice window becomes a liability---it protects borrowers who no longer deserve protection (because their collateral is worthless) while allowing arbitrageurs to drain real USDC.
+
+\textbf{Extension:} Implement a tiered timelock:
+\[
+\tau_t^{\text{effective}}(\delta) = \begin{cases}
+\tau_t & \text{if } \delta \le \tau_{\mathrm{catastrophic}} \\
+0 & \text{if } \delta > \tau_{\mathrm{catastrophic}}.
+\end{cases}
+\]
+For the intermediate range, a continuous interpolation is also possible: $\tau_t^{\text{effective}} = \tau_t \cdot (1 - \min(1, (\delta - \tau_d) / (\tau_{\mathrm{catastrophic}} - \tau_d)))$.
+
+\subsection{Cross-vault contagion via auto-allocators}
+
+The paper's cascade model (Section~\ref{sec:illustrative}) captures contagion via \emph{liquidation impact}: large liquidation waves worsen execution, converting borderline accounts into insolvent ones. Resolv introduces a new contagion channel: \emph{capital reallocation under stale oracles}.
+
+The mechanism is: oracle lag $\to$ arb loop $\to$ pool drain $\to$ high utilization $\to$ allocator supplies fresh capital $\to$ arb drains again $\to$ repeat. This is a positive feedback loop that does not exist in the standard cascade model because it does not involve liquidations at all---it operates purely through the borrow/supply channel.
+
+\textbf{Extension for Tier~1 simulation:} Model the allocator as a capital-routing agent that responds to utilization signals. When the oracle is stale, allocator inflows become a direct loss channel. The dual-regime oracle's \texttt{isStressed()} signal can sever this loop.
+
+\subsection{``Response time budget'' analysis}
+
+Given a depeg of severity $s$ and an arb drain rate of $r(s)$ per minute, the total bad debt scales as:
+\[
+\text{Bad Debt} \approx r(s) \cdot t_{\text{response}},
+\]
+where $t_{\text{response}}$ is the time between exploit and oracle repricing (or manual intervention). For Resolv, $r \approx \$67\text{K/min}$ and $t_{\text{response}} = 91$ min (Gauntlet's manual intervention), yielding $\sim$\$5.9M---closely matching the observed \$6M. Under $D_1$, $t_{\text{response}} = 1$ min; under $D_2$, $t_{\text{response}} = 0.4$ min. At these response times, the arb loop has not yet become profitable ($\delta < 2\times$ threshold), so the drain rate is effectively zero.
+
+%% ═══════════════════════════════════════════════════════════════════════
+\section{Simulation Plan: What to Test (and What to Measure)}
+\label{sec:sim_plan}
+%% ═══════════════════════════════════════════════════════════════════════
+
+\subsection*{Tier 1: Oracle switching, cascades, and allocator contagion}
+
+The central question: how does EMA convergence change bad-debt risk relative to hard switching, and how does allocator severance interact with oracle repricing? Simulate a Morpho-style market with heterogeneous borrower LTVs, stochastic underlying price, impact-increasing-in-volume liquidations, \emph{and} an allocator agent that routes capital based on utilization. Compare: (A)~reference-only, (B)~hard switch, (C)~EMA convergence, (D)~EMA + allocator kill-switch. Measure peak liquidation rate, bad debt, and allocator-induced losses.
+
+\subsection*{Tier 2: Manipulation resistance, false positives, and supply-velocity detection}
+
+Stress-test the deviation trigger against adversarial TWAP distortions and evaluate the supply-velocity trigger against organic supply growth patterns. The key question for $D_2$: what is the false-positive rate for mature stablecoins under normal rebasing, vault deposits, and seasonal mint patterns?
+
+\subsection*{Tier 3: Auction-compressed costs and the risk frontier}
+
+Quantify the LLTV shift for a fixed tail-loss target under OFA vs.\ fixed-bonus liquidation. Note that this analysis is relevant only for moderate-stress scenarios; under catastrophic events, the circuit breaker dominates.
+
+%% ═══════════════════════════════════════════════════════════════════════
+\section{Limitations and Open Questions}
+%% ═══════════════════════════════════════════════════════════════════════
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{Calibration.} Thresholds ($\tau_d$, $\tau_t$, $\tau_{\mathrm{catastrophic}}$, $\tau_S$) should be asset-specific and data-driven. The Resolv counterfactual is favorable because the exploit was so extreme that almost any reasonable parameterization would have caught it. More nuanced events (5--10\% gradual depegs) require careful calibration to avoid over-triggering.
+
+\item \textbf{DEX manipulation resistance.} Multi-venue aggregation, minimum liquidity thresholds, and sufficiently long TWAP windows are load-bearing assumptions. The supply-velocity trigger ($D_2$) is immune to flash-loan manipulation but requires on-chain \texttt{totalSupply} monitoring infrastructure.
+
+\item \textbf{Auction routing adoption.} Auction-compressed costs require that liquidation flow is routed through the auction mechanism. If liquidators bypass the auction, the compression benefit does not materialize.
+
+\item \textbf{PoR feed availability.} Not all wrapped assets have onchain PoR feeds. USR had no such feed---validating the paper's concern about fallback governance. The supply-velocity trigger is a partial substitute: it detects unauthorized minting without requiring an explicit reserves feed.
+
+\item \textbf{Counterfactual limitations.} Our simulations use a reconstructed price path (piecewise-analytic, fitted to forensic timestamps) rather than tick-level DEX data, and model the Morpho market as a single aggregate pool rather than position-by-position. The factual scenario is calibrated to reproduce the actual \$6M Morpho loss (achieving \$5.87M, a 97.9\% match) by modelling Gauntlet's manual intervention at $t=91$ minutes. The key claim---that the adaptive oracle eliminates the arb-loop extraction channel---is robust because both $D_1$ and $D_2$ trigger \emph{before the arb loop becomes profitable}, not after.
+
+\item \textbf{Generalizability.} Resolv was an infinite-mint exploit. Other failure modes (custodial insolvency, bridge failure, smart-contract drain) may produce slower depegs where the standard timelock path is sufficient. The catastrophic-deviation bypass is designed as a safety net for extreme events, not the primary operating mode.
+\end{itemize}
+
+%% ═══════════════════════════════════════════════════════════════════════
+\section{Conclusion}
+%% ═══════════════════════════════════════════════════════════════════════
+
+A dual-regime oracle with timelocked switching and EMA convergence provides a credible middle ground between reference-only marking (which can overvalue collateral under persistent depegs) and hard switching (which can create self-inflicted liquidation cascades). The design extends the MetaOracle pattern with smooth convergence, raw-vs-smoothed separation, and---motivated by the Resolv USR exploit---a catastrophic-deviation bypass for extreme events.
+
+The Resolv case study provides the first real-world empirical validation of the Design~A failure mode at catastrophic scale: a static oracle that overvalued collateral by 50--56$\times$ while automated allocators routed millions of dollars of fresh capital into insolvent markets. Our counterfactual analysis---calibrated to reproduce the actual \$6M Morpho loss under the factual scenario---demonstrates that either of two adaptive oracle configurations would have activated before the arb-loop window opened, reducing bad debt from \$5.87M to \$0.83M. The residual represents genuine liquidation shortfalls that the static oracle hides as latent insolvency; the adaptive oracle surfaces them honestly.
+
+Separately, OFA-based liquidation execution can be treated as a risk primitive that moves markets toward a more efficient risk frontier under normal-to-moderate stress, complementing the circuit-breaker protections that dominate under catastrophic events.
+
+\end{document}
