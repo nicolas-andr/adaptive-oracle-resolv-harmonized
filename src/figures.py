@@ -96,6 +96,8 @@ def fig_timeline_oracle_paths(results: dict[str, SimResult], output_dir: Path):
     ax.plot(t, results['factual'].dex_price, color=COLORS['dex_price'],
             linewidth=2, label='USR DEX spot price')
     ax.axhline(1.0, color='gray', ls='--', alpha=0.5, label='$1.00 peg')
+    ax.axvspan(GRID.MINT1_OFFSET_MIN, TIMELINE.USR_BOTTOM_TIME_MIN,
+               color=COLORS['dex_price'], alpha=0.05)
     ax.axvline(GRID.MINT1_OFFSET_MIN, color=COLORS['trigger'], ls=':', alpha=0.7, lw=1)
     ax.axvline(GRID.MINT2_OFFSET_MIN, color=COLORS['trigger'], ls=':', alpha=0.7, lw=1)
     ax.axvline(TIMELINE.STEAKHOUSE_EXIT_MIN, color=COLORS['steakhouse'],
@@ -109,9 +111,11 @@ def fig_timeline_oracle_paths(results: dict[str, SimResult], output_dir: Path):
             fontsize=8, color=COLORS['steakhouse'], va='top')
     ax.text(TIMELINE.GAUNTLET_INTERVENE_MIN + 1.0, 0.56, 'Gauntlet halt',
             fontsize=8, color=COLORS['factual'], va='top')
+    ax.text(8.0, 0.14, 'Rapid depeg window', fontsize=8, color=COLORS['dex_price'],
+            bbox=dict(boxstyle='round,pad=0.2', fc='white', ec='none', alpha=0.85))
 
     ax.set_ylabel('USR DEX Price (USD)')
-    _compact_panel_title(ax, 'A', 'USR DEX Price Path')
+    _compact_panel_title(ax, 'A', 'Market Price Crash')
     ax.set_ylim(-0.02, 1.15)
     ax.legend(loc='upper right')
 
@@ -144,9 +148,13 @@ def fig_timeline_oracle_paths(results: dict[str, SimResult], output_dir: Path):
         ax.text(0.03, 0.17, trigger_text, transform=ax.transAxes,
                 fontsize=8, va='bottom',
                 bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='none', alpha=0.85))
+    ax.text(0.61, 0.82, 'Static oracle stays fixed at $1.13\nuntil manual intervention',
+            transform=ax.transAxes, fontsize=8, color=COLORS['factual'],
+            ha='left', va='top',
+            bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='none', alpha=0.85))
 
     ax.set_ylabel('wstUSR Oracle Price (USD)')
-    _compact_panel_title(ax, 'B', 'Oracle Paths')
+    _compact_panel_title(ax, 'B', 'Oracle Reaction to the Depeg')
     ax.set_ylim(-0.05, 1.35)
     ax.legend(loc='upper right', ncol=2, fontsize=8)
 
@@ -161,13 +169,20 @@ def fig_timeline_oracle_paths(results: dict[str, SimResult], output_dir: Path):
     tt_d2 = results['D2'].trigger_time
     if tt_d2 is not None:
         ax.axvline(tt_d2, color=COLORS['D2'], ls='--', alpha=0.7, lw=1.5)
-        ax.text(tt_d2 + 10, 171, r'$D_2$ trigger' + '\n49% supply jump',
-                fontsize=8.5, color=COLORS['D2'], va='top')
+        supply_at_trigger = supply_m[np.argmin(np.abs(t - tt_d2))]
+        ax.annotate(r'$D_2$ trigger' + '\nMint #1 adds 50M USR\n(+49% in one block)',
+                    xy=(tt_d2, supply_at_trigger), xytext=(7.0, 167.0),
+                    fontsize=8.2, color=COLORS['D2'], va='top', ha='left',
+                    arrowprops=dict(arrowstyle='->', color=COLORS['D2'], lw=1.4),
+                    bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='none', alpha=0.9))
+    ax.text(GRID.MINT2_OFFSET_MIN + 2.0, 178.0, 'Mint #2\n+30M USR',
+            fontsize=8, va='top',
+            bbox=dict(boxstyle='round,pad=0.2', fc='#fff3cd', ec='none', alpha=0.9))
 
     ax.set_ylabel('USR Total Supply (M)')
-    ax.set_xlabel('Minutes After Simulation Start (Mint #1 at t = 0.4 min)')
-    _compact_panel_title(ax, 'C', 'USR Supply Path')
-    ax.legend(loc='upper left')
+    ax.set_xlabel('Minutes After Simulation Start (Mint 1 at t = 0.4 min)')
+    _compact_panel_title(ax, 'C', 'Supply Shock from Unauthorized Mints')
+    ax.legend(loc='upper right')
 
     plt.tight_layout()
     _save_figure(fig, output_dir, 'fig_timeline_oracle_paths.png')
