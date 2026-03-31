@@ -1,116 +1,200 @@
-# Simulation Methodology
+# Harmonized Methodology
 
-This document explains the design decisions, assumptions, and limitations of the counterfactual simulation in detail. It is intended for reviewers and researchers who want to understand exactly what the code does and does not claim.
+This note consolidates the executable methodology in this repo with the higher-level framing that appeared in an alternate local draft.
 
-For a consolidated methodology note that also captures the clearer conceptual framing from the alternate local draft, see [`METHODOLOGY_HARMONIZED.md`](METHODOLOGY_HARMONIZED.md). This file remains the code-facing simulation reference.
+The goal is simple: keep one canonical repo while preserving the genuinely useful refinements from the alternate draft and discarding the parts that were just older snapshots.
 
----
+## Canonical source of truth
 
-## 1. What We Simulate
+- The runnable simulation, calibration, and reproducibility workflow in this repo are authoritative.
+- Canonical outputs come from [`reproducibility_manifest.json`](reproducibility_manifest.json).
+- Older draft numbers such as `$5.86M`, `$0.84M`, `1.0 min`, and the `$8M` initial USDC pool are superseded by the fixed-step calibrated run in this repo.
 
-We model a single Morpho-style isolated lending market with:
+## What the alternate draft improved
 
-- **Collateral asset**: wstUSR (wrapped staked USR), oracle price $1.13
+The alternate draft did not contain newer code or a newer runnable methodology. Its main value was conceptual:
+
+- it made the distinction between **reference value** and **realizable liquidation value** much clearer
+- it explained the Resolv incident as a **three-step contagion sequence**:
+  1. the oracle stayed stale
+  2. the arb loop extracted USDC
+  3. the allocator refilled the pool
+- it gave a cleaner intuition for why the oracle should **smooth the stressed price** rather than snap directly to the DEX
+- it emphasized the need to separate the signal used for **detection** from the value used for **reporting**, avoiding EMA dampening
+- it added a more explicit implementation interpretation around Morpho adapters, allocator gating, and optional reserve checks
+
+## Harmonized methodology
+
+### 1. What the oracle is trying to price
+
+The simulation treats a wrapped or synthetic collateral asset as having two relevant values:
+
+- **Reference value**: what the collateral should be worth if its wrapper or backing mechanism is functioning as intended.
+- **Realizable value**: what a liquidator can actually sell the collateral for on available DEX liquidity.
+
+Under normal conditions these values are close. Under stress they can diverge sharply, and it is that divergence that creates hidden insolvency and stale-oracle extraction.
+
+### 2. Why Resolv created bad debt
+
+The harmonized view of the Resolv incident is:
+
+1. the wstUSR oracle stayed at `$1.13` while market value collapsed
+2. the oracle/DEX gap made deposit-and-borrow arbitrage profitable
+3. the Public Allocator interpreted pool depletion as healthy demand and kept routing fresh USDC into the impaired market
+
+This repo's counterfactual is designed to break that chain early, not to prevent the upstream mint exploit itself.
+
+### 3. Oracle state machine
+
+The executable model in this repo remains the same:
+
+- `factual`: static oracle at `$1.13`, with manual intervention at `t = 91` minutes
+- `D1`: DEX-deviation trigger, followed by EMA convergence
+- `D2`: supply-velocity trigger, followed by the same EMA convergence
+
+Once `D1` or `D2` fires, three concurrent actions are modeled:
+
+1. the oracle enters `STRESSED`
+2. allocator inflows are severed
+3. new borrows are halted
+
+### 4. Why smoothing is still the right stressed-price mechanism
+
+The alternate draft's intuition is compatible with the runnable model:
+
+- snapping directly from the reference value to the DEX value would cluster liquidations into one shock
+- EMA convergence still reprices toward realizable value, but does so in a way that better reflects how a defensive oracle would respond in practice
+- the detector should look at the **raw dislocation signal**, while the stressed oracle reports the **smoothed value**
+
+That separation is preserved in the code.
+
+### 5. Trigger interpretation
+
+The current calibrated timeline is:
+
+- `D2` fires in the mint block, at `t = 0.4` min on the simulation clock
+- `D1` fires at `t = 1.2` min on the simulation clock
+
+Because the simulation intentionally starts `0.4` minutes before Mint #1, the practical interpretation is:
+
+- `D2` reacts immediately to the exploit's supply anomaly
+- `D1` reacts within the first minute after Mint #1
+
+This resolves the apparent mismatch between older prose that said "1.0 min" or "24--60 seconds" and the current fixed-step calibrated run.
+
+### 6. Integration interpretation
+
+The alternate draft's Chainlink-oriented language is best read as an integration mapping, not as something the simulation directly depends on.
+
+The harmonized interpretation is:
+
+- the code models an **oracle adapter surface** compatible with Morpho-style markets
+- allocator severance is a first-class part of the defensive response
+- reserve checks and product mappings such as PoR, Data Streams, Automation, or SVR are **conceptual extensions**, not required to reproduce the counterfactual figures in this repo
+
+### 7. Canonical current outputs
+
+The current calibrated run in this repo produces:
+
+- factual: `$5.8724M` bad debt
+- `D1`: `$0.8314M`
+- `D2`: `$0.8314M`
+- prevention: `85.8%`
+
+Those numbers are the ones to cite when discussing the executable analysis in this repo.
+
+## Simulation details
+
+### 1. What the executable model includes
+
+The runnable simulation models a single Morpho-style isolated lending market with:
+
+- **Collateral asset**: wstUSR, using a factual oracle value of `$1.13`
 - **Borrow asset**: USDC
 - **50 pre-existing borrower positions** with heterogeneous LTVs
-- **An arb-loop agent** that exploits oracle–DEX divergence
-- **A Public Allocator agent** that re-supplies USDC when utilisation is high
-- **Three oracle configurations** (factual / D₁ / D₂)
+- **An arb-loop agent** that exploits oracle-DEX divergence
+- **A Public Allocator agent** that re-supplies USDC when utilization is high
+- **Three oracle configurations**: `factual`, `D1`, and `D2`
 
-We do **not** simulate:
-- Multiple Morpho markets or cross-market contagion (only one market)
-- Individual arb transactions (we model aggregate drain rate)
-- Curve pool AMM dynamics (we use a reconstructed price path)
-- Gas price competition or MEV (not relevant to the claim)
-- Positions created during the exploit (only pre-existing)
+It does **not** model:
 
-## 2. Loss Channels
+- multiple Morpho markets or cross-market contagion
+- individual arbitrage transactions, gas auctions, or MEV competition
+- full Curve AMM state dynamics
+- positions opened during the exploit itself
 
-### 2.1 Organic bad debt
+The purpose is to isolate the lending-market contagion channel created by a stale collateral oracle.
 
-Pre-existing borrower positions have collateral valued at $1.13 (wstUSR) and debt in USDC. When the oracle reprices collateral downward (D₁/D₂), some positions breach the LLTV of 0.86 and are liquidated. The liquidation proceeds are at the DEX price, so the shortfall is:
+### 2. Loss channels in the simulation
 
-    shortfall = debt - (collateral_quantity × DEX_price)
+The code separates three mechanisms:
 
-Under the **static oracle** (factual), no repricing occurs, so no liquidations are triggered. The organic loss is "hidden" as latent insolvency.
+#### Organic bad debt
 
-Under **D₁/D₂**, the oracle reprices within the first minute. Positions breach LLTV and are liquidated at the (low) DEX price, producing ~$0.83M in genuine shortfall. This is the "honest loss" that the adaptive oracle surfaces.
+Pre-existing borrowers can become genuinely undercollateralized once the oracle reprices collateral downward. Under `D1` and `D2`, these positions are liquidated against the stressed DEX-implied value, producing the residual `~$0.83M` shortfall. That is the "honest" insolvency that the adaptive oracle surfaces.
 
-### 2.2 Arb-loop extraction
+Under the factual static oracle, that insolvency remains hidden because the oracle never reprices before manual intervention.
 
-When `oracle_price / (DEX_price × 1.13) > 2.0` (the arb profit threshold), the simulation models an aggregate arb drain:
+#### Arb-loop extraction
 
-1. Arb borrows `min(2.5% of pool, $15K)` USDC per block
-2. Pool shrinks
-3. Bad debt increases by `arb_borrow × (1 - DEX_price)` (since collateral is nearly worthless)
+When the oracle is sufficiently above realizable DEX value, the model allows a reduced-form arbitrage loop that repeatedly borrows USDC against overstated collateral. In the code this channel is active only while:
 
-This runs every block as long as:
-- The arb ratio exceeds the threshold
-- `allow_new_borrows` is True
-- The pool has more than $5K remaining
+- the oracle/DEX dislocation is above the profit threshold
+- new borrows remain allowed
+- enough pool liquidity remains available
 
-Under D₁/D₂, `allow_new_borrows` is set to False at trigger time, halting the arb loop.
+Under `D1` and `D2`, the trigger disables new borrows and cuts off this channel early.
 
-### 2.3 Allocator re-supply
+#### Allocator re-supply
 
-When pool utilisation exceeds 80% and the pool is below 20% of its initial value, the allocator injects $50K per block. Under D₁/D₂, `allow_allocator` is set to False at trigger time.
+The Public Allocator is modeled as adding fresh USDC when utilization is high and the market appears depleted. In the factual path this creates the reinforcing loop observed in the incident:
 
-In the factual scenario, the allocator runs until Gauntlet's manual intervention at t=91 min. This creates a saw-tooth pattern: arb drains the pool → allocator refills → arb drains again.
+1. arbs drain the pool
+2. allocator capital refills it
+3. arbs extract again
 
-## 3. Calibration
+Under `D1` and `D2`, allocator inflows are severed at trigger time.
 
-### Target: $5.87M factual bad debt ≈ $6M actual
+### 3. Calibration and price-path design
 
-The simulation's factual bad debt ($5.87M) closely matches the empirical Morpho loss (~$6M). The calibration knobs are:
+The factual path is calibrated to land near the observed Morpho loss:
 
-| Knob | Effect | Setting |
-|---|---|---|
-| `USDC_POOL_INITIAL` | Sets first-drain duration | $3M |
-| `ARB_DRAIN_FRAC` / `ARB_DRAIN_CAP` | Drain speed per block | 2.5% / $15K |
-| `ALLOCATOR_INFLOW_PER_STEP` | Refill speed | $50K |
-| `MANUAL_INTERVENTION_MIN` | When losses stop | 91 min |
+- factual bad debt: `$5.8724M`
+- empirical target: `~$6M`
+- manual intervention: `t = 91 min`
 
-The product of these parameters yields ~$6M total extraction over 91 minutes. The sensitivity to each parameter is monotonic and intuitive:
-- Higher drain rate → faster loss accumulation
-- Higher allocator inflow → more total loss (more refill cycles)
-- Earlier intervention → less total loss
+The main calibration levers are the initial USDC pool, arb drain speed, allocator refill speed, and intervention time. The discrete `12`-second block grid means the simulation is intentionally approximate rather than tuned to hit `$6.00M` exactly.
 
-### Why not $6.00M exactly?
+The USR DEX path is piecewise analytic, with a flat pre-mint period, an early linear selloff, an accelerating crash, a terminal collapse, and a low-price post-crash regime. The most important point is that both `D1` and `D2` trigger during the early phase of the crash, so the counterfactual result is driven far more by early detection than by the exact late-crash shape.
 
-The simulation uses discrete blocks (12-second steps), so the cumulative drain is jagged rather than smooth. The $5.87M result is within 2.2% of the $6M target, which is well within the uncertainty of the forensic estimate itself.
+### 4. Claims, assumptions, and limits
 
-## 4. Price Path Reconstruction
+The strongest code-backed claim in this repo is narrow:
 
-The USR DEX price path is a **piecewise-analytic function** with five phases:
+- under either `D1` or `D2`, the oracle-driven arbitrage extraction channel is severed within the first minute of the exploit timeline
 
-```
-Phase 1 (Pre-mint):       t ∈ [0, 0.4]      → $1.00 (flat)
-Phase 2 (Initial sell):   t ∈ (0.4, 2.4]     → linear $1.00 → $0.90
-Phase 3 (Accel crash):    t ∈ (2.4, 10.4]    → power-law $0.90 → $0.30
-Phase 4 (Terminal crash): t ∈ (10.4, 17.0]   → exp-decay → $0.025
-Phase 5 (Post-crash):     t ∈ (17.0, 120.0]  → oscillation $0.03–$0.05
-```
+The exact dollar values remain calibration-dependent, but the directional result is robust across reasonable parameter changes because:
 
-**Critical insight**: The counterfactual results depend almost entirely on Phase 2. Both D₁ (2% deviation for 2 blocks) and D₂ (5% supply spike) trigger during Phase 2, when the price has dropped only ~5–10%. The exact shape of Phases 3–5 affects the factual bad-debt magnitude but NOT the trigger times or the adaptive-oracle outcomes. The sensitivity heatmap (Figure 5) demonstrates this robustness.
+- the supply spike is far above any plausible detection threshold
+- the DEX dislocation crosses the `D1` threshold quickly
+- both triggers act before the long tail of allocator-assisted extraction dominates losses
 
-## 5. What the Simulation Claims
+Important limits remain:
 
-**Strong claim**: Under either D₁ or D₂, the arb-loop extraction channel that produced the vast majority of Morpho's losses would have been completely severed within the first minute. This is robust to reasonable parameter variation because:
-1. The supply spike (49% in one block) is orders of magnitude above any plausible false-positive threshold
-2. The DEX deviation exceeds 2% within ~1 minute of the mint
-3. Both signals are far above threshold, so small calibration changes don't move the result
+- the price path is stylized rather than a tick-level replay
+- arbitrage is modeled as an aggregate drain rate rather than transaction-by-transaction behavior
+- allocator routing is reduced-form
+- residual organic bad debt depends on the modeled borrower cohort
+- the analysis is a downstream lending-defense counterfactual, not a claim that the oracle prevents the upstream mint exploit
 
-**Weaker claim**: The exact dollar amounts ($5.87M factual, $0.83M counterfactual) depend on calibration parameters. The *ratio* (85.8% prevention) is robust; the absolute numbers have ±20% uncertainty from the forensic estimates.
+## What was intentionally not merged
 
-**Not claimed**: That the adaptive oracle would prevent the Resolv exploit itself. The oracle is a downstream defense for lending markets; it cannot stop upstream minting exploits. What it prevents is the *secondary contagion* through stale-oracle arbitrage.
+- The alternate repo's looser dependency setup was not adopted.
+- Older calibration text based on the pre-fix time grid was not preserved.
+- Conceptual product mappings were not turned into code claims unless they are explicitly modeled here.
 
-## 6. Assumptions and Limitations
+## Recommended reading order
 
-| Assumption | Impact if wrong | Mitigation |
-|---|---|---|
-| Arb loop starts when oracle/DEX > 2× | If arbs are more aggressive, losses are higher; trigger times unchanged | Threshold is conservative (arbs may act at 1.5×) |
-| Allocator routes $50K/block | Higher rate → higher factual loss, same counterfactual | Sensitivity is monotonic |
-| 50 pre-existing borrowers | More/fewer → different organic BD magnitude | Only affects residual, not arb channel |
-| Price path is stylised | Exact crash shape affects factual magnitude | Trigger times in Phase 2 are robust |
-| D₂ lookback = 1 block | Longer lookback → slightly later trigger | Even 5-block lookback triggers < 1 min |
-| Manual intervention at 91 min | Earlier/later changes factual BD | Documented in Gauntlet post-mortem |
+1. [`README.md`](README.md) for the rerun workflow
+2. [`METHODOLOGY.md`](METHODOLOGY.md) for the consolidated narrative and simulation assumptions
+3. [`reproducibility_manifest.json`](reproducibility_manifest.json) for canonical outputs

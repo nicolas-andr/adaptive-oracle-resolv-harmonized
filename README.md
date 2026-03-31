@@ -4,7 +4,7 @@
 
 This repository contains the simulation code, parameter configuration, and figure-generation pipeline for the Resolv USR case study (Sections 7–9 of the paper). The code reconstructs the March 22, 2026 exploit timeline, simulates a Morpho-style lending market under three oracle configurations, and produces all six publication-quality figures.
 
-For the consolidated methodology across both local drafts, start with [`METHODOLOGY_HARMONIZED.md`](METHODOLOGY_HARMONIZED.md). It keeps this repo's reproducible calibration as the source of truth while folding in the clearer conceptual framing from the alternate draft.
+For the methodology behind the executable analysis, start with [`METHODOLOGY.md`](METHODOLOGY.md). It is the single canonical methodology note for this repo and keeps the reproducible calibration as the source of truth while folding in the clearer conceptual framing from the alternate draft.
 
 ---
 
@@ -93,7 +93,7 @@ The simulation is calibrated to reproduce the empirical Morpho outcome:
 resolv-counterfactual/
 ├── .python-version             # Canonical Python version for pyenv/uv users
 ├── Makefile                    # `make reproduce` / `make verify`
-├── METHODOLOGY_HARMONIZED.md   # Consolidated methodology across local drafts
+├── METHODOLOGY.md              # Canonical methodology note
 ├── README.md                   # This file
 ├── requirements.txt            # Direct dependencies
 ├── requirements-lock.txt       # Exact dependency set for archival reruns
@@ -122,7 +122,7 @@ resolv-counterfactual/
 
 All tunable parameters live in [`config.py`](config.py). The file is organised into eight sections, each documented with justifications and sources. Below is a summary of the most important knobs.
 
-If you want the narrative version of why these design choices exist, see [`METHODOLOGY_HARMONIZED.md`](METHODOLOGY_HARMONIZED.md) first and then come back here for the concrete simulation assumptions.
+If you want the narrative and technical rationale behind these design choices, see [`METHODOLOGY.md`](METHODOLOGY.md).
 
 ### On-Chain Forensic Constants (Section 1)
 

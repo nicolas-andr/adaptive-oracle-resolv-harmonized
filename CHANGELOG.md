@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.0.4 — 2026-03-31
+
+Public-repo cleanup release.
+
+### Documentation
+- Consolidated the methodology docs into `METHODOLOGY.md` as the single canonical methodology note
+- Removed the duplicate methodology file and updated README references accordingly
+- Scrubbed local-path references from the canonical methodology note before public sharing
+
 ## v1.0.3 — 2026-03-29
 
 Figure clarity and Monte Carlo scale-up release.
